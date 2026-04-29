@@ -182,8 +182,11 @@ func main() {
 		port = "3000"
 	}
 
+	// For Docker environments, it's safer to bind to 0.0.0.0 explicitly
+	address := "0.0.0.0:" + port
+
 	srv := &http.Server{
-		Addr:           ":" + port,
+		Addr:           address,
 		Handler:        r,
 		MaxHeaderBytes: 1 << 20, // 1MB headers
 		ReadTimeout:    600 * time.Second,
@@ -191,7 +194,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Mimo Proxy listening on port %s", port)
+		log.Printf("Mimo Proxy listening on %s", address)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %s\n", err)
 		}

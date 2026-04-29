@@ -6,7 +6,7 @@
 #
 
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
@@ -18,10 +18,13 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o mimoproxy main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -tags netgo -a -installsuffix cgo -o mimoproxy main.go
 
 # Final stage
 FROM alpine:latest
+
+# Install CA certificates for HTTPS requests
+RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 

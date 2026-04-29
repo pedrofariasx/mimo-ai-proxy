@@ -379,20 +379,41 @@ func handleChatCompletions(c *gin.Context) {
 			firstMsg = firstMsg[:200]
 		}
 		sessionKey := fmt.Sprintf("sess_%x", firstMsg)
+		
+		// 1. Try Memory Cache
 		if cachedID, found := services.GlobalCache.Get(sessionKey); found {
 			convID = cachedID.(string)
-			fmt.Printf("Detected existing session via fingerprint: %s\n", convID)
+			fmt.Printf("Detected existing session via memory fingerprint: %s\n", convID)
 		} else {
-			// First time seeing this conversation fingerprint
-			convID = utils.GenerateID()
-			services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
-			
-			// Register the new conversation ID with Xiaomi
-			auth := services.GetSelectedAuth()
-			if err := services.CreateConversation(auth, convID); err != nil {
-				fmt.Printf("Failed to register conversation with Xiaomi: %v\n", err)
+			// 2. Try Database (Sessions table)
+			dbID, err := services.GetSession(sessionKey)
+			if err == nil && dbID != "" {
+				convID = dbID
+				services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
+				fmt.Printf("Detected existing session via database fingerprint: %s\n", convID)
+			} else {
+				// 3. Try Deep Recovery (Messages table fallback)
+				firstMsgText := services.ExtractText(input.Messages[0].Content, false)
+				deepID, err := services.FindSessionByMessage(input.Messages[0].Role, firstMsgText)
+				if err == nil && deepID != "" {
+					convID = deepID
+					services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
+					_ = services.SaveSession(sessionKey, convID)
+					fmt.Printf("Recovered existing session from message history: %s\n", convID)
+				} else {
+					// 4. First time seeing this conversation fingerprint
+					convID = utils.GenerateID()
+					services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
+					_ = services.SaveSession(sessionKey, convID)
+					
+					// Register the new conversation ID with Xiaomi
+					auth := services.GetSelectedAuth()
+					if err := services.CreateConversation(auth, convID); err != nil {
+						fmt.Printf("Failed to register conversation with Xiaomi: %v\n", err)
+					}
+					fmt.Printf("Started and registered new session for fingerprint: %s\n", convID)
+				}
 			}
-			fmt.Printf("Started and registered new session for fingerprint: %s\n", convID)
 		}
 	}
 

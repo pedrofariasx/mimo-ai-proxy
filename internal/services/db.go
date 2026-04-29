@@ -48,6 +48,12 @@ func InitDB() {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 	CREATE INDEX IF NOT EXISTS idx_conv ON messages(conversation_id);
+
+	CREATE TABLE IF NOT EXISTS sessions (
+		fingerprint TEXT PRIMARY KEY,
+		conversation_id TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err = DB.Exec(createTableQuery)
 	if err != nil {
@@ -83,4 +89,31 @@ func GetLocalHistory(convID string) ([]models.Message, error) {
 		messages = append(messages, m)
 	}
 	return messages, nil
+}
+
+func SaveSession(fingerprint, convID string) error {
+	query := `INSERT OR REPLACE INTO sessions (fingerprint, conversation_id) VALUES (?, ?)`
+	_, err := DB.Exec(query, fingerprint, convID)
+	return err
+}
+
+func GetSession(fingerprint string) (string, error) {
+	var convID string
+	query := `SELECT conversation_id FROM sessions WHERE fingerprint = ?`
+	err := DB.QueryRow(query, fingerprint).Scan(&convID)
+	if err == nil {
+		return convID, nil
+	}
+	return "", err
+}
+
+func FindSessionByMessage(role, content string) (string, error) {
+	var convID string
+	// Try to find a conversation that starts with this message
+	query := `SELECT conversation_id FROM messages WHERE role = ? AND content = ? ORDER BY created_at ASC LIMIT 1`
+	err := DB.QueryRow(query, role, content).Scan(&convID)
+	if err != nil {
+		return "", err
+	}
+	return convID, nil
 }
