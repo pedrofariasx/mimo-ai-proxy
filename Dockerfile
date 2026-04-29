@@ -18,7 +18,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -tags netgo -a -installsuffix cgo -o mimoproxy main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mimoproxy main.go
 
 # Final stage
 FROM alpine:latest
