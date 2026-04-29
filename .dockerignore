@@ -1,0 +1,20 @@
+# Go
+bin/
+mimoproxy
+mimoproxy_go
+
+# Environment
+.env
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+LICENSE
