@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -76,6 +77,7 @@ func RegisterChatRoutes(r *gin.Engine, authMiddleware gin.HandlerFunc) {
 		v1.GET("/models", handleModels)
 		v1.POST("/chat/completions", handleChatCompletions)
 		v1.GET("/chat/history/:conversationId", handleGetHistory)
+		v1.POST("/files", handleFileUpload)
 	}
 
 	r.POST("/open-apis/bot/chat", handleDirectProxy)
@@ -227,6 +229,138 @@ func handleGetHistory(c *gin.Context) {
 	})
 }
 
+func processAutoUploads(messages []models.Message, auth models.Auth) []models.MultiMedia {
+	var medias []models.MultiMedia
+
+	if len(messages) == 0 {
+		return medias
+	}
+
+	// Only process the last message to avoid re-uploading and re-referencing 
+	// attachments from previous turns in the history.
+	msg := messages[len(messages)-1]
+
+	contentArray, ok := msg.Content.([]interface{})
+	if !ok {
+		return medias
+	}
+
+	for _, item := range contentArray {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		mType, _ := m["type"].(string)
+		var data []byte
+		var fileName string
+		var mediaType string
+
+		if mType == "image_url" {
+			urlInfo, _ := m["image_url"].(map[string]interface{})
+			url, _ := urlInfo["url"].(string)
+			if url == "" {
+				continue
+			}
+
+			if strings.HasPrefix(url, "data:image/") {
+				// Base64
+				parts := strings.SplitN(url, ",", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				decoded, err := base64.StdEncoding.DecodeString(parts[1])
+				if err != nil {
+					continue
+				}
+				data = decoded
+				
+				// Guess extension from mime type
+				mime := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
+				ext := "png"
+				if strings.Contains(mime, "/") {
+					ext = strings.Split(mime, "/")[1]
+				}
+				fileName = fmt.Sprintf("upload_%d.%s", time.Now().UnixNano(), ext)
+				mediaType = "image"
+			} else if strings.HasPrefix(url, "http") {
+				// External URL
+				resp, err := http.Get(url)
+				if err != nil {
+					continue
+				}
+				defer resp.Body.Close()
+				data, _ = io.ReadAll(resp.Body)
+				fileName = fmt.Sprintf("url_upload_%d.png", time.Now().UnixNano())
+				mediaType = "image"
+			}
+		} else if mType == "input_audio" {
+			audioInfo, _ := m["input_audio"].(map[string]interface{})
+			audioData, _ := audioInfo["data"].(string)
+			if audioData != "" {
+				decoded, err := base64.StdEncoding.DecodeString(audioData)
+				if err != nil {
+					continue
+				}
+				data = decoded
+				fileName = fmt.Sprintf("audio_%d.webm", time.Now().UnixNano())
+				mediaType = "audio"
+			}
+		}
+
+		if len(data) > 0 {
+			result, err := services.UploadToXiaomi(auth, fileName, data, mediaType)
+			if err == nil && result != nil {
+				medias = append(medias, *result)
+			}
+		}
+	}
+
+	return medias
+}
+
+func handleFileUpload(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "No file uploaded", "invalid_request_error", nil)
+		return
+	}
+
+	f, err := file.Open()
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to open file", "server_error", nil)
+		return
+	}
+	defer f.Close()
+
+	fileData, err := io.ReadAll(f)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to read file", "server_error", nil)
+		return
+	}
+
+	// Determine mediaType
+	mediaType := "file"
+	// Simpler extension check
+	if strings.Contains(file.Header.Get("Content-Type"), "image") {
+		mediaType = "image"
+	} else if strings.Contains(file.Header.Get("Content-Type"), "audio") || strings.HasSuffix(strings.ToLower(file.Filename), ".webm") {
+		mediaType = "audio"
+	} else if strings.Contains(file.Header.Get("Content-Type"), "video") {
+		mediaType = "video"
+	}
+
+	auth := services.GetSelectedAuth()
+	result, err := services.UploadToXiaomi(auth, file.Filename, fileData, mediaType)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "Failed to upload to Xiaomi", "server_error", nil)
+		fmt.Printf("Upload error: %v\n", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 func handleChatCompletions(c *gin.Context) {
 	completionID := utils.GenerateID()
 	
@@ -249,12 +383,13 @@ func handleChatCompletions(c *gin.Context) {
 	}
 
 	var input struct {
-		Messages []models.Message `json:"messages"`
-		Model    string           `json:"model"`
-		Stream   bool             `json:"stream"`
-		User     string           `json:"user"`
-		Tools    []models.Tool    `json:"tools"`
-		WebSearch bool            `json:"web_search"`
+		Messages []models.Message   `json:"messages"`
+		Model    string             `json:"model"`
+		Stream   bool               `json:"stream"`
+		User     string             `json:"user"`
+		Tools    []models.Tool      `json:"tools"`
+		WebSearch bool              `json:"web_search"`
+		MultiMedias []models.MultiMedia `json:"multi_medias"`
 	}
 
 	if err = c.ShouldBindJSON(&input); err != nil {
@@ -352,6 +487,13 @@ func handleChatCompletions(c *gin.Context) {
 	var query string
 	convID := input.User
 	
+	// Automatic Media Upload
+	currentAuth := services.GetSelectedAuth()
+	autoMedias := processAutoUploads(input.Messages, currentAuth)
+	if len(autoMedias) > 0 {
+		input.MultiMedias = append(input.MultiMedias, autoMedias...)
+	}
+
 	// AUTOMATIC SESSION DETECTION: If User ID is empty, try to identify conversation by history hash
 	if convID == "" && len(input.Messages) > 0 {
 		// Create a fingerprint of the first message to identify the conversation
@@ -388,8 +530,7 @@ func handleChatCompletions(c *gin.Context) {
 					_ = services.SaveSession(sessionKey, convID)
 					
 					// Register the new conversation ID with Xiaomi
-					auth := services.GetSelectedAuth()
-					if err := services.CreateConversation(auth, convID); err != nil {
+					if err := services.CreateConversation(currentAuth, convID); err != nil {
 						fmt.Printf("Failed to register conversation with Xiaomi: %v\n", err)
 					}
 					fmt.Printf("Started and registered new session for fingerprint: %s\n", convID)
@@ -404,12 +545,10 @@ func handleChatCompletions(c *gin.Context) {
 		// Sync local history if empty
 		localMsgs, _ := services.GetLocalHistory(convID)
 		if len(localMsgs) == 0 {
-			auth := services.GetSelectedAuth()
-
 			// Register/Save the conversation ID with Xiaomi first to be safe
-			_ = services.CreateConversation(auth, convID)
+			_ = services.CreateConversation(currentAuth, convID)
 
-			remoteHistory, err := services.GetConversationHistory(auth, convID)
+			remoteHistory, err := services.GetConversationHistory(currentAuth, convID)
 			if err == nil && len(remoteHistory) > 0 {
 				for _, item := range remoteHistory {
 					services.SaveMessage(convID, item.MsgID+"_u", "user", item.InputInfo.Query)
@@ -519,7 +658,10 @@ func handleChatCompletions(c *gin.Context) {
 			WebSearchStatus: webSearchStatus,
 			Model:           targetModel,
 		},
-		MultiMedias: []interface{}{},
+		MultiMedias: []models.MultiMedia{},
+	}
+	if len(input.MultiMedias) > 0 {
+		payload.MultiMedias = input.MultiMedias
 	}
 	if payload.ConversationID == "" {
 		payload.ConversationID = utils.GenerateID()
@@ -557,7 +699,8 @@ func handleChatCompletions(c *gin.Context) {
 		url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
 		
 		payloadBytes, _ := json.Marshal(payload)
-		fmt.Printf("[%s] Sending request to Xiaomi: %d bytes (query length: %d)\n", completionID, len(payloadBytes), len(payload.Query))
+		fmt.Printf("[%s] Chat Request: %d bytes | Model: %s | Media: %d\n", 
+			completionID, len(payloadBytes), payload.ModelConfig.Model, len(payload.MultiMedias))
 		
 		req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 		customHeaders := make(map[string]string)

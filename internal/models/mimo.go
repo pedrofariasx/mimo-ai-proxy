@@ -12,13 +12,26 @@ type Auth struct {
 	Token  string
 }
 
+type MultiMedia struct {
+	MediaType         string `json:"mediaType"`
+	FileUrl           string `json:"fileUrl"`
+	CompressedVideoUrl string `json:"compressedVideoUrl"`
+	AudioTrackUrl      string `json:"audioTrackUrl"`
+	Name              string `json:"name"`
+	Size              int64  `json:"size"`
+	Status            string `json:"status"`
+	ObjectName        string `json:"objectName"`
+	TokenUsage        int    `json:"tokenUsage"`
+	URL               string `json:"url"`
+}
+
 type MimoPayload struct {
 	MsgID          string      `json:"msgId"`
 	ConversationID string      `json:"conversationId"`
 	Query          string      `json:"query"`
 	IsEditedQuery  bool        `json:"isEditedQuery"`
 	ModelConfig    ModelConfig `json:"modelConfig"`
-	MultiMedias    []interface{} `json:"multiMedias"`
+	MultiMedias    []MultiMedia `json:"multiMedias"`
 }
 
 type ModelConfig struct {
