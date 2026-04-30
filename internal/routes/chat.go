@@ -486,6 +486,7 @@ func handleChatCompletions(c *gin.Context) {
 
 	var query string
 	convID := input.User
+	var sessionKey string
 	
 	// Automatic Media Upload
 	currentAuth := services.GetSelectedAuth()
@@ -496,12 +497,24 @@ func handleChatCompletions(c *gin.Context) {
 
 	// AUTOMATIC SESSION DETECTION: If User ID is empty, try to identify conversation by history hash
 	if convID == "" && len(input.Messages) > 0 {
-		// Create a fingerprint of the first message to identify the conversation
-		firstMsg := input.Messages[0].Role + ":" + services.ExtractText(input.Messages[0].Content, true)
+		// Find the first user message to create a fingerprint (skip system prompts)
+		var firstUserMsgIdx int = -1
+		for i, msg := range input.Messages {
+			if msg.Role == "user" {
+				firstUserMsgIdx = i
+				break
+			}
+		}
+		// Fallback: if no user message found, use the last message
+		if firstUserMsgIdx == -1 {
+			firstUserMsgIdx = len(input.Messages) - 1
+		}
+		// Create a fingerprint based on the user's text, not system prompts
+		firstMsg := "user:" + services.ExtractText(input.Messages[firstUserMsgIdx].Content, true)
 		if len(firstMsg) > 200 {
 			firstMsg = firstMsg[:200]
 		}
-		sessionKey := fmt.Sprintf("sess_%x", firstMsg)
+		sessionKey = fmt.Sprintf("sess_%x", firstMsg)
 		
 		// 1. Try Memory Cache
 		if cachedID, found := services.GlobalCache.Get(sessionKey); found {
@@ -516,8 +529,8 @@ func handleChatCompletions(c *gin.Context) {
 				fmt.Printf("Detected existing session via database fingerprint: %s\n", convID)
 			} else {
 				// 3. Try Deep Recovery (Messages table fallback)
-				firstMsgText := services.ExtractText(input.Messages[0].Content, false)
-				deepID, err := services.FindSessionByMessage(input.Messages[0].Role, firstMsgText)
+				firstMsgText := services.ExtractText(input.Messages[firstUserMsgIdx].Content, false)
+				deepID, err := services.FindSessionByMessage("user", firstMsgText)
 				if err == nil && deepID != "" {
 					convID = deepID
 					services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
@@ -536,6 +549,32 @@ func handleChatCompletions(c *gin.Context) {
 					fmt.Printf("Started and registered new session for fingerprint: %s\n", convID)
 				}
 			}
+		}
+	}
+
+	// AUTOMATIC SESSION REBOOT: If conversation failed 3+ times, start a new one with a summary
+	var summaryContext string
+	if convID != "" {
+		needsRebootKey := "needs_reboot_" + convID
+		if val, found := services.GlobalCache.Get(needsRebootKey); found && val.(bool) {
+			fmt.Printf("Rebooting session %s due to consecutive failures...\n", convID)
+			summaryContext = services.GenerateSummary(currentAuth, convID)
+			
+			// Generate new conversation ID
+			convID = utils.GenerateID()
+			
+			// Register new one
+			_ = services.CreateConversation(currentAuth, convID)
+			
+			// If we had a fingerprint, update it to point to the new convID
+			if sessionKey != "" {
+				services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
+				_ = services.SaveSession(sessionKey, convID)
+			}
+			
+			// Reset failure stats for the old and new (just in case) convIDs
+			services.GlobalCache.Delete(needsRebootKey)
+			services.GlobalCache.Delete("fail_count_" + convID) 
 		}
 	}
 
@@ -561,6 +600,12 @@ func handleChatCompletions(c *gin.Context) {
 
 		lastMessage := input.Messages[len(input.Messages)-1]
 		lastMessageText := utils.FormatMessageForMiMo(lastMessage)
+		
+		// Prepend summary if this is a rebooted session
+		if summaryContext != "" {
+			lastMessageText = summaryContext + lastMessageText
+		}
+		
 		services.SaveMessage(convID, "user_"+utils.GenerateID(), "user", lastMessageText)
 		
 		var systemContent string
@@ -581,6 +626,9 @@ func handleChatCompletions(c *gin.Context) {
 	} else if len(input.Messages) <= 1 {
 		lastMessage := input.Messages[len(input.Messages)-1]
 		query = utils.FormatMessageForMiMo(lastMessage)
+		if summaryContext != "" {
+			query = summaryContext + query
+		}
 	} else {
 		// Do not limit history unless it exceeds 1M tokens (~4M characters)
 		var processedMessages []string
@@ -843,6 +891,9 @@ func processStream(c *gin.Context, body io.Reader, completionID, model string, u
 	// Save assistant message to local history
 	services.SaveMessage(userID, "asst_"+completionID, "assistant", fullText.String())
 
+	// Update failure statistics
+	updateConversationFailStats(userID, fullText.String())
+
 	finalChunk := utils.CreateChatCompletionChunk(completionID, "", model, &finishReason, "", &usage, nil)
 	finalBytes, _ := json.Marshal(finalChunk)
 	c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(finalBytes)))
@@ -954,6 +1005,9 @@ func processNonStream(c *gin.Context, body io.Reader, completionID, model string
 
 	// Save assistant message to local history
 	services.SaveMessage(userID, "asst_"+completionID, "assistant", fullText.String())
+
+	// Update failure statistics
+	updateConversationFailStats(userID, fullText.String())
 
 	// Cache successful non-streaming response
 	services.GlobalCache.Set(cacheKey, nsResponse, 5*time.Minute)
@@ -1161,5 +1215,33 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 				remaining = ""
 			}
 		}
+	}
+}
+
+func updateConversationFailStats(userID string, fullText string) {
+	if userID == "" {
+		return
+	}
+	
+	failCountKey := "fail_count_" + userID
+	needsRebootKey := "needs_reboot_" + userID
+	
+	if len(strings.TrimSpace(fullText)) == 0 {
+		count := 0
+		if val, found := services.GlobalCache.Get(failCountKey); found {
+			count = val.(int)
+		}
+		count++
+		services.GlobalCache.Set(failCountKey, count, 24*time.Hour)
+		fmt.Printf("Consecutive empty responses for %s: %d\n", userID, count)
+		
+		if count >= 3 {
+			services.GlobalCache.Set(needsRebootKey, true, 24*time.Hour)
+			fmt.Printf("Session %s flagged for reboot due to 3+ failures\n", userID)
+		}
+	} else {
+		// Reset counter on success
+		services.GlobalCache.Delete(failCountKey)
+		services.GlobalCache.Delete(needsRebootKey)
 	}
 }

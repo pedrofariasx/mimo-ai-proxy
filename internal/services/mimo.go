@@ -348,3 +348,29 @@ func CreateConversation(auth models.Auth, conversationID string) error {
 
 	return nil
 }
+
+func GenerateSummary(auth models.Auth, conversationID string) string {
+	history, err := GetConversationHistory(auth, conversationID)
+	if err != nil || len(history) == 0 {
+		return ""
+	}
+
+	// Build a text representation of the history
+	var sb strings.Builder
+	// Take last 10 messages for summary context
+	start := 0
+	if len(history) > 10 {
+		start = len(history) - 10
+	}
+	
+	for i := start; i < len(history); i++ {
+		item := history[i]
+		sb.WriteString(fmt.Sprintf("User: %s\n", item.InputInfo.Query))
+		if len(item.DialogLogDetailList) > 0 {
+			sb.WriteString(fmt.Sprintf("AI: %s\n", item.DialogLogDetailList[0].Result))
+		}
+	}
+
+	summaryPrompt := fmt.Sprintf("Below is a summary of our previous conversation. Please continue from here:\n\n%s\n\n--- End of previous context ---\n\n", sb.String())
+	return summaryPrompt
+}
