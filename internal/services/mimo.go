@@ -19,14 +19,6 @@ import (
 	"time"
 )
 
-var MODEL_MAPPING = map[string]string{
-	"gpt-4o":        "mimo-v2.5-pro",
-	"gpt-4":         "mimo-v2.5-pro",
-	"gpt-3.5-turbo": "mimo-v2.5-pro",
-	"mimo-pro":      "mimo-v2.5-pro",
-	"mimo-search":   "mimo-v2.5-pro",
-}
-
 func GetSelectedAuth() models.Auth {
 	serviceTokensStr := os.Getenv("SERVICE_TOKENS")
 	if serviceTokensStr == "" {

@@ -99,7 +99,7 @@ func main() {
 			avgTimeStr = fmt.Sprintf("%dms", sum/int64(len(responseTimes)))
 		}
 
-		modelListHtml := "<li>mimo-v2.5-pro (fallback)</li>"
+		modelListHtml := "<li>API models unavailable</li>"
 		auth := services.GetSelectedAuth()
 		headers := services.GetOfficialHeaders(auth, nil)
 		client := &http.Client{Timeout: 5 * time.Second}

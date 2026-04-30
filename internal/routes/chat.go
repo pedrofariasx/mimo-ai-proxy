@@ -118,14 +118,6 @@ func handleModels(c *gin.Context) {
 					"description": m.EnIntro,
 				})
 			}
-			for alias := range services.MODEL_MAPPING {
-				modelsList = append(modelsList, map[string]interface{}{
-					"id":       alias,
-					"object":   "model",
-					"created":  1700000000,
-					"owned_by": "proxy",
-				})
-			}
 			response := gin.H{"object": "list", "data": modelsList}
 			services.GlobalCache.Set("models_list", response, 30*time.Minute)
 			c.JSON(http.StatusOK, response)
@@ -133,19 +125,8 @@ func handleModels(c *gin.Context) {
 		}
 	}
 
-	// Fallback
-	modelsList := []map[string]interface{}{
-		{"id": "mimo-v2.5-pro", "object": "model", "created": 1700000000, "owned_by": "xiaomi"},
-	}
-	for alias := range services.MODEL_MAPPING {
-		modelsList = append(modelsList, map[string]interface{}{
-			"id":       alias,
-			"object":   "model",
-			"created":  1700000000,
-			"owned_by": "proxy",
-		})
-	}
-	c.JSON(http.StatusOK, gin.H{"object": "list", "data": modelsList})
+	// If API fails and no cache, return empty list or error
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": []interface{}{}})
 }
 
 func handleDirectProxy(c *gin.Context) {
@@ -520,13 +501,7 @@ func handleChatCompletions(c *gin.Context) {
 		}
 	}
 
-	targetModel := services.MODEL_MAPPING[input.Model]
-	if targetModel == "" {
-		targetModel = input.Model
-	}
-	if targetModel == "" {
-		targetModel = "mimo-v2.5-pro"
-	}
+	targetModel := input.Model
 
 	enableThinking := !strings.Contains(input.Model, "no-thinking")
 	webSearchStatus := "disabled"
