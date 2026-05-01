@@ -54,6 +54,15 @@ func InitDB() {
 		conversation_id TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS agent_states (
+		id TEXT PRIMARY KEY,
+		goal TEXT,
+		status TEXT,
+		state_json TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err = DB.Exec(createTableQuery)
 	if err != nil {
@@ -116,4 +125,17 @@ func FindSessionByMessage(role, content string) (string, error) {
 		return "", err
 	}
 	return convID, nil
+}
+
+func SaveAgentState(id, goal, status, stateJson string) error {
+	query := `INSERT OR REPLACE INTO agent_states (id, goal, status, state_json, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
+	_, err := DB.Exec(query, id, goal, status, stateJson)
+	return err
+}
+
+func GetAgentState(id string) (string, string, string, error) {
+	var goal, status, stateJson string
+	query := `SELECT goal, status, state_json FROM agent_states WHERE id = ?`
+	err := DB.QueryRow(query, id).Scan(&goal, &status, &stateJson)
+	return goal, status, stateJson, err
 }

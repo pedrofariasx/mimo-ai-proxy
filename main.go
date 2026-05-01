@@ -102,12 +102,13 @@ func main() {
 		modelListHtml := "<li>API models unavailable</li>"
 		auth := services.GetSelectedAuth()
 		headers := services.GetOfficialHeaders(auth, nil)
-		client := &http.Client{Timeout: 5 * time.Second}
-		req, _ := http.NewRequest("GET", "https://aistudio.xiaomimimo.com/open-apis/bot/config", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, "GET", "https://aistudio.xiaomimimo.com/open-apis/bot/config", nil)
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
-		resp, err := client.Do(req)
+		resp, err := services.GlobalHTTPClient.Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			var result struct {
 				Code int `json:"code"`
@@ -176,6 +177,7 @@ func main() {
 
 	// Mount chat routes
 	routes.RegisterChatRoutes(r, middleware.ValidateApiKey())
+	routes.RegisterAgentRoutes(r)
 
 	port := os.Getenv("PORT")
 	if port == "" {

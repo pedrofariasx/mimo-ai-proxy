@@ -23,8 +23,14 @@ func FormatToolsAsInstructions(tools []models.Tool) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("\n\n# Tools\n\nYou have access to the following tools. To call a tool, you MUST use the following XML format:\n")
-	sb.WriteString("<tool_call>{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}</tool_call>\n\n")
+	sb.WriteString("\n\n# External Tools\n\n")
+	sb.WriteString("You have access to the following tools. To execute a tool, you MUST use the exact XML tag `<tool_call>` with a JSON payload inside. NEVER wrap the JSON in Markdown code blocks (like ```json).\n\n")
+	sb.WriteString("Format:\n")
+	sb.WriteString("<tool_call>\n{\"name\": \"function_name\", \"arguments\": {\"arg1\": \"value1\"}}\n</tool_call>\n\n")
+	sb.WriteString("CRITICAL RULES:\n")
+	sb.WriteString("1. If you need to use a tool, output ONLY the `<tool_call>` block. Do NOT include any normal text explaining what you are doing. Do NOT output conversational text.\n")
+	sb.WriteString("2. You can only use ONE tool per response.\n")
+	sb.WriteString("3. Wait for the tool result before proceeding to the next step.\n\n")
 	sb.WriteString("Available tools:\n")
 
 	for _, tool := range tools {
@@ -55,6 +61,11 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 			continue
 		}
 		jsonStr := strings.TrimSpace(match[1])
+		// Remove potential markdown wrappers like ```json ... ``` inside the tag
+		jsonStr = regexp.MustCompile("(?s)^```[a-z]*\n").ReplaceAllString(jsonStr, "")
+		jsonStr = regexp.MustCompile("(?s)\n```$").ReplaceAllString(jsonStr, "")
+		jsonStr = strings.TrimSpace(jsonStr)
+
 		var toolCallData struct {
 			Name      string      `json:"name"`
 			Arguments interface{} `json:"arguments"`
@@ -84,9 +95,17 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 		}
 	}
 
-	// Robustness check for whole JSON
+	// Robustness check for whole JSON or JSON in Markdown block
 	if len(toolCalls) == 0 {
 		trimmedText := strings.TrimSpace(text)
+		
+		// Extract json from markdown block if present
+		jsonBlockRegex := regexp.MustCompile(`(?s)\x60\x60\x60(?:json)?\s*({.*?})\s*\x60\x60\x60`)
+		jsonMatch := jsonBlockRegex.FindStringSubmatch(trimmedText)
+		if len(jsonMatch) >= 2 {
+			trimmedText = jsonMatch[1]
+		}
+		
 		if strings.HasPrefix(trimmedText, "{") && strings.HasSuffix(trimmedText, "}") {
 			var toolCallData struct {
 				Name      string      `json:"name"`
@@ -110,6 +129,9 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 						Arguments: argsStr,
 					},
 				})
+				
+				// If we successfully parsed a fallback tool call, we clear the text
+				// so the conversational text doesn't leak out as content.
 				cleanText = ""
 			}
 		}
@@ -141,7 +163,7 @@ func FormatMessageForMiMo(message models.Message) string {
 				}
 			}
 		}
-		return fmt.Sprintf("<tool_result>%s</tool_result>", contentStr)
+		return fmt.Sprintf("\n<tool_result>\n%s\n</tool_result>\n\n[SYSTEM REMINDER: You must ONLY respond with a `<tool_call>` XML block if you need to take an action, or use `attempt_completion` if finished. Do NOT output conversational text.]\n", contentStr)
 	}
 
 	// Handle normal content and complex parts

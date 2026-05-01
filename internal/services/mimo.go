@@ -22,6 +22,24 @@ import (
 	"time"
 )
 
+var GlobalHTTPClient *http.Client
+
+func init() {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 500
+	transport.MaxIdleConnsPerHost = 100
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.ResponseHeaderTimeout = 60 * time.Second
+	transport.ExpectContinueTimeout = 5 * time.Second
+	transport.WriteBufferSize = 4 * 1024 * 1024 // 4MB
+	transport.ReadBufferSize = 4 * 1024 * 1024  // 4MB
+
+	GlobalHTTPClient = &http.Client{
+		Timeout:   600 * time.Second, // 10 minutes
+		Transport: transport,
+	}
+}
+
 type GenUploadInfoResponse struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
@@ -57,13 +75,12 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 	payloadBytes, _ := json.Marshal(payload)
 
 	headers := GetOfficialHeaders(auth, nil)
-	client := &http.Client{Timeout: 30 * time.Second}
 	req, _ := http.NewRequest("POST", genUrl, bytes.NewBuffer(payloadBytes))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := GlobalHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +103,7 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 	uploadReq.Header.Set("Referer", "https://aistudio.xiaomimimo.com/")
 	uploadReq.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
 
-	uploadResp, err := client.Do(uploadReq)
+	uploadResp, err := GlobalHTTPClient.Do(uploadReq)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +127,7 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 		parseReq.Header.Set(k, v)
 	}
 
-	parseResp, err := client.Do(parseReq)
+	parseResp, err := GlobalHTTPClient.Do(parseReq)
 	if err != nil {
 		return nil, err
 	}
@@ -295,13 +312,12 @@ func GetConversationHistory(auth models.Auth, conversationID string) ([]DialogIt
 	payloadBytes, _ := json.Marshal(payload)
 	headers := GetOfficialHeaders(auth, nil)
 
-	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := GlobalHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -330,13 +346,12 @@ func CreateConversation(auth models.Auth, conversationID string) error {
 	payloadBytes, _ := json.Marshal(payload)
 	headers := GetOfficialHeaders(auth, nil)
 
-	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := GlobalHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

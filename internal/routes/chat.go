@@ -92,13 +92,12 @@ func handleModels(c *gin.Context) {
 	auth := services.GetSelectedAuth()
 	headers := services.GetOfficialHeaders(auth, nil)
 
-	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequest("GET", "https://aistudio.xiaomimimo.com/open-apis/bot/config", nil)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := services.GlobalHTTPClient.Do(req)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		var result struct {
 			Code int `json:"code"`
@@ -136,7 +135,6 @@ func handleDirectProxy(c *gin.Context) {
 	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
 
 	body, _ := io.ReadAll(c.Request.Body)
-	client := &http.Client{Timeout: 300 * time.Second}
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	
 	customHeaders := make(map[string]string)
@@ -148,7 +146,7 @@ func handleDirectProxy(c *gin.Context) {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := services.GlobalHTTPClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to proxy request", "details": err.Error()})
 		return
@@ -623,6 +621,11 @@ func handleChatCompletions(c *gin.Context) {
 		} else {
 			query = lastMessageText
 		}
+		
+		// Add a final reminder at the very end of the user's message to ensure strict tool usage
+		if toolInstructions != "" && !strings.Contains(lastMessageText, "SYSTEM REMINDER") {
+			query += "\n\n[SYSTEM REMINDER: You must ONLY respond with a `<tool_call>` XML block if you need to take an action, or use `attempt_completion` if finished. Do NOT output conversational text.]"
+		}
 	} else if len(input.Messages) <= 1 {
 		lastMessage := input.Messages[len(input.Messages)-1]
 		query = utils.FormatMessageForMiMo(lastMessage)
@@ -658,6 +661,10 @@ func handleChatCompletions(c *gin.Context) {
 			} else {
 				query = strings.Join(processedMessages, "\n\n")
 			}
+		}
+		
+		if toolInstructions != "" {
+			query += "\n\n[SYSTEM REMINDER: You must ONLY respond with a `<tool_call>` XML block if you need to take an action, or use `attempt_completion` if finished. Do NOT output conversational text.]"
 		}
 
 		// Only truncate if we exceed the safety limit for payload stability
@@ -728,19 +735,6 @@ func handleChatCompletions(c *gin.Context) {
 
 	var resp *http.Response
 	var auth models.Auth
-	// Create a custom transport with larger buffers
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.MaxIdleConns = 100
-	transport.IdleConnTimeout = 90 * time.Second
-	transport.ResponseHeaderTimeout = 60 * time.Second
-	transport.ExpectContinueTimeout = 5 * time.Second
-	transport.WriteBufferSize = 4 * 1024 * 1024 // 4MB
-	transport.ReadBufferSize = 4 * 1024 * 1024  // 4MB
-	
-	client := &http.Client{
-		Timeout:   600 * time.Second, // 10 minutes
-		Transport: transport,
-	}
 
 	for i := 0; i < maxRetries; i++ {
 		auth = services.GetSelectedAuth()
@@ -761,7 +755,7 @@ func handleChatCompletions(c *gin.Context) {
 		}
 
 		startTime := time.Now()
-		resp, err = client.Do(req)
+		resp, err = services.GlobalHTTPClient.Do(req)
 		if err == nil {
 			fmt.Printf("Xiaomi Response Status: %s (Duration: %v)\n", resp.Status, time.Since(startTime))
 			if resp.StatusCode != http.StatusOK {
