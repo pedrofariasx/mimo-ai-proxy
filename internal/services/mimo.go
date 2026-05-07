@@ -17,6 +17,7 @@ import (
 	"math/rand"
 	"mimoproxy/internal/models"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -42,10 +43,10 @@ func init() {
 var GlobalHTTPClient *http.Client
 
 func HandleMimoChat(payload models.MimoPayload, auth models.Auth) (string, error) {
-	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
+	apiURL := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", url.QueryEscape(auth.Ph))
 
 	payloadBytes, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(payloadBytes))
 
 	headers := GetOfficialHeaders(auth, nil)
 	for k, v := range headers {
@@ -119,7 +120,7 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 	md5Str := hex.EncodeToString(hash[:])
 
 	// 2. Get Upload Info
-	genUrl := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/resource/genUploadInfo?xiaomichatbot_ph=%s", auth.Ph)
+	genURL := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/resource/genUploadInfo?xiaomichatbot_ph=%s", url.QueryEscape(auth.Ph))
 	payload := map[string]string{
 		"fileName":       fileName,
 		"fileContentMd5": md5Str,
@@ -127,7 +128,7 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 	payloadBytes, _ := json.Marshal(payload)
 
 	headers := GetOfficialHeaders(auth, nil)
-	req, _ := http.NewRequest("POST", genUrl, bytes.NewBuffer(payloadBytes))
+	req, _ := http.NewRequest("POST", genURL, bytes.NewBuffer(payloadBytes))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -168,13 +169,13 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 	}
 
 	// 4. Parse Resource
-	parseUrl := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/resource/parse?fileUrl=%s&objectName=%s&model=mimo-v2.5&xiaomichatbot_ph=%s",
+	parseURL := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/resource/parse?fileUrl=%s&objectName=%s&model=mimo-v2.5&xiaomichatbot_ph=%s",
 		strings.ReplaceAll(uploadInfo.Data.ResourceUrl, "&", "%26"),
 		uploadInfo.Data.ObjectName,
-		auth.Ph,
+		url.QueryEscape(auth.Ph),
 	)
 
-	parseReq, _ := http.NewRequest("POST", parseUrl, strings.NewReader("{}"))
+	parseReq, _ := http.NewRequest("POST", parseURL, strings.NewReader("{}"))
 	for k, v := range headers {
 		parseReq.Header.Set(k, v)
 	}
@@ -211,6 +212,12 @@ func UploadToXiaomi(auth models.Auth, fileName string, fileData []byte, mediaTyp
 	}, nil
 }
 
+func cleanEnvValue(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "\"'")
+	return s
+}
+
 func GetSelectedAuth() models.Auth {
 	serviceTokensStr := os.Getenv("SERVICE_TOKENS")
 	if serviceTokensStr == "" {
@@ -233,9 +240,9 @@ func GetSelectedAuth() models.Auth {
 	rand.Seed(time.Now().UnixNano())
 	index := rand.Intn(len(tokens))
 
-	selectedToken := strings.TrimSpace(tokens[index])
-	selectedUserId := strings.TrimSpace(userIds[index%len(userIds)])
-	selectedPh := strings.TrimSpace(phs[index%len(phs)])
+	selectedToken := cleanEnvValue(tokens[index])
+	selectedUserId := cleanEnvValue(userIds[index%len(userIds)])
+	selectedPh := cleanEnvValue(phs[index%len(phs)])
 
 	return models.Auth{
 		Cookie: fmt.Sprintf("serviceToken=\"%s\"; userId=%s; xiaomichatbot_ph=\"%s\"", selectedToken, selectedUserId, selectedPh),
@@ -349,7 +356,7 @@ type DialogItem struct {
 }
 
 func GetConversationHistory(auth models.Auth, conversationID string) ([]DialogItem, error) {
-	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/chat/dialog/list?xiaomichatbot_ph=%s", auth.Ph)
+	apiURL := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/chat/dialog/list?xiaomichatbot_ph=%s", url.QueryEscape(auth.Ph))
 
 	payload := map[string]interface{}{
 		"queryParam": map[string]string{
@@ -364,7 +371,7 @@ func GetConversationHistory(auth models.Auth, conversationID string) ([]DialogIt
 	payloadBytes, _ := json.Marshal(payload)
 	headers := GetOfficialHeaders(auth, nil)
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(payloadBytes))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -387,7 +394,7 @@ func GetConversationHistory(auth models.Auth, conversationID string) ([]DialogIt
 }
 
 func CreateConversation(auth models.Auth, conversationID string) error {
-	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/chat/conversation/save?xiaomichatbot_ph=%s", auth.Ph)
+	apiURL := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/chat/conversation/save?xiaomichatbot_ph=%s", url.QueryEscape(auth.Ph))
 
 	payload := map[string]interface{}{
 		"conversationId": conversationID,
@@ -398,7 +405,7 @@ func CreateConversation(auth models.Auth, conversationID string) error {
 	payloadBytes, _ := json.Marshal(payload)
 	headers := GetOfficialHeaders(auth, nil)
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(payloadBytes))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
