@@ -15,9 +15,9 @@ import (
 )
 
 func Plan(state *AgentState) (*PlanResponse, error) {
-	stateBytes, _ := json.MarshalIndent(state, "", "  ")
+	stateBytes, _ := json.MarshalIndent(state.Compact(), "", "  ")
 	
-	userPrompt := fmt.Sprintf("Goal: %s\nCurrent State:\n%s\n\nPlease provide a list of tasks to accomplish the goal.", state.Goal, string(stateBytes))
+	userPrompt := fmt.Sprintf("Goal: %s\nCurrent State (Recent History):\n%s\n\nPlease provide a list of tasks to accomplish the goal.", state.Goal, string(stateBytes))
 	
 	response, err := CallLLM(PlannerSystemPrompt, userPrompt, true)
 	if err != nil {

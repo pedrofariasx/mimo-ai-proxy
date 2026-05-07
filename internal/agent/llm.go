@@ -10,77 +10,43 @@
 package agent
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"mimoproxy/internal/models"
+	"mimoproxy/internal/services"
+	"mimoproxy/internal/utils"
 	"os"
 	"strings"
-	"time"
 )
 
 func CallLLM(systemPrompt string, userPrompt string, forceJSON bool) (string, error) {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "3000"
+	model := os.Getenv("AGENT_MODEL")
+	if model == "" {
+		model = "mimo-v2.5-no-thinking"
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%s/v1/chat/completions", port)
 
 	if forceJSON {
 		userPrompt += "\n\nCRITICAL: Return ONLY valid JSON."
 	}
 
-	reqBody := map[string]interface{}{
-		"model": "mimo-v2.5-no-thinking",
-		"messages": []map[string]interface{}{
-			{
-				"role":    "system",
-				"content": systemPrompt,
-			},
-			{
-				"role":    "user",
-				"content": userPrompt,
-			},
+	auth := services.GetSelectedAuth()
+	
+	payload := models.MimoPayload{
+		MsgID:          utils.GenerateID(),
+		ConversationID: utils.GenerateID(),
+		Query:          fmt.Sprintf("%s\n\n%s", systemPrompt, userPrompt),
+		IsEditedQuery:  false,
+		ModelConfig: models.ModelConfig{
+			EnableThinking:  !strings.Contains(model, "no-thinking"),
+			WebSearchStatus: "disabled",
+			Model:           model,
 		},
-		"stream": false,
 	}
 
-	payload, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payload))
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 300 * time.Second}
-	resp, err := client.Do(req)
+	content, err := services.HandleMimoChat(payload, auth)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse OpenAI-like response
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices returned from LLM")
-	}
-
-	content := result.Choices[0].Message.Content
-	
 	// Strip markdown JSON blocks if present
 	content = strings.TrimSpace(content)
 	if strings.HasPrefix(content, "```json") {
@@ -90,6 +56,6 @@ func CallLLM(systemPrompt string, userPrompt string, forceJSON bool) (string, er
 		content = strings.TrimPrefix(content, "```")
 		content = strings.TrimSuffix(content, "```")
 	}
-	
+
 	return strings.TrimSpace(content), nil
 }

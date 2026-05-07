@@ -48,6 +48,31 @@ func LoadOrInitializeState(goalID string, goal string) (*AgentState, error) {
 	return &state, nil
 }
 
+func (s *AgentState) Compact() map[string]interface{} {
+	// Limit past actions and results to the last 5 to save tokens
+	limit := 5
+	pastActions := s.PastActions
+	results := s.Results
+	
+	if len(pastActions) > limit {
+		pastActions = pastActions[len(pastActions)-limit:]
+	}
+	if len(results) > limit {
+		results = results[len(results)-limit:]
+	}
+
+	return map[string]interface{}{
+		"id":           s.ID,
+		"goal":         s.Goal,
+		"current_task": s.CurrentTask,
+		"past_actions": pastActions,
+		"results":      results,
+		"errors":       s.Errors,
+		"variables":    s.Variables,
+		"history_truncated": len(s.PastActions) > limit,
+	}
+}
+
 func PersistState(state *AgentState) error {
 	stateBytes, err := json.Marshal(state)
 	if err != nil {

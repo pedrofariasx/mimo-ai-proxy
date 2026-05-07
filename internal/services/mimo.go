@@ -8,6 +8,7 @@ package services
 
 import (
 	"bytes"
+	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -21,8 +22,6 @@ import (
 	"strings"
 	"time"
 )
-
-var GlobalHTTPClient *http.Client
 
 func init() {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -38,6 +37,59 @@ func init() {
 		Timeout:   600 * time.Second, // 10 minutes
 		Transport: transport,
 	}
+}
+
+var GlobalHTTPClient *http.Client
+
+func HandleMimoChat(payload models.MimoPayload, auth models.Auth) (string, error) {
+	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
+
+	payloadBytes, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+
+	headers := GetOfficialHeaders(auth, nil)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := GlobalHTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Xiaomi API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	// Handle potential Gzip response from Xiaomi
+	var bodyReader io.Reader = resp.Body
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err == nil {
+			defer gz.Close()
+			bodyReader = gz
+		}
+	}
+
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Result string `json:"result"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(bodyReader).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if result.Code != 0 {
+		return "", fmt.Errorf("Xiaomi API business error: %d - %s", result.Code, result.Msg)
+	}
+
+	return result.Data.Result, nil
 }
 
 type GenUploadInfoResponse struct {
@@ -388,4 +440,28 @@ func GenerateSummary(auth models.Auth, conversationID string) string {
 
 	summaryPrompt := fmt.Sprintf("Below is a summary of our previous conversation. Please continue from here:\n\n%s\n\n--- End of previous context ---\n\n", sb.String())
 	return summaryPrompt
+}
+
+func GenerateFingerprint(messages []models.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	var firstUserMsgIdx int = -1
+	for i, msg := range messages {
+		if msg.Role == "user" {
+			firstUserMsgIdx = i
+			break
+		}
+	}
+	// Fallback: if no user message found, use the last message
+	if firstUserMsgIdx == -1 {
+		firstUserMsgIdx = len(messages) - 1
+	}
+
+	firstMsg := "user:" + ExtractText(messages[firstUserMsgIdx].Content, true)
+	if len(firstMsg) > 200 {
+		firstMsg = firstMsg[:200]
+	}
+	return fmt.Sprintf("sess_%x", firstMsg)
 }

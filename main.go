@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"mimoproxy/internal/middleware"
 	"mimoproxy/internal/routes"
@@ -39,6 +40,15 @@ func main() {
 	services.InitDB()
 
 	r := gin.New()
+	
+	// Set up templates
+	r.SetFuncMap(template.FuncMap{
+		"safe": func(s string) template.HTML {
+			return template.HTML(s)
+		},
+	})
+	r.LoadHTMLGlob("templates/*")
+
 	// Set Max Request Body Size to 100MB
 	r.Use(func(c *gin.Context) {
 		// Increase limit to 100MB
@@ -128,44 +138,12 @@ func main() {
 			}
 		}
 
-		html := fmt.Sprintf(`
-        <html>
-            <head>
-                <title>Xiaomi Mimo Proxy (Go)</title>
-                <style>
-                    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 2rem; background: #f4f4f9; }
-                    .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                    h1 { color: #333; margin-top: 0; }
-                    code { background: #eee; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
-                    .status { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #22c55e; margin-right: 8px; }
-                    ul { padding-left: 1.2rem; }
-                </style>
-            </head>
-            <body>
-                <div class="card">
-                    <h1><span class="status"></span>Mimo AI Proxy (Go)</h1>
-                    <p>Uptime: <strong>%.0fs</strong></p>
-                    <hr/>
-                    <h3>Available Endpoints:</h3>
-                    <ul>
-                        <li><code>POST /v1/chat/completions</code> - OpenAI Compatible</li>
-                        <li><code>GET /v1/models</code> - Dynamic Model List</li>
-                        <li><code>GET /health</code> - System Health</li>
-                    </ul>
-                    <hr/>
-                    <h3>Active Models:</h3>
-                    <ul>%s</ul>
-                    <hr/>
-                    <h3>Performance:</h3>
-                    <p>Avg Upstream Latency: <strong>%s</strong></p>
-                    <hr/>
-                    <h3>Token Usage Stats:</h3>
-                    <ul>%s</ul>
-                </div>
-            </body>
-        </html>
-    `, time.Since(startTime).Seconds(), modelListHtml, avgTimeStr, statsHtml)
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+		c.HTML(http.StatusOK, "dashboard.html", gin.H{
+			"Uptime":     fmt.Sprintf("%.0f", time.Since(startTime).Seconds()),
+			"ModelList":  modelListHtml,
+			"AvgLatency": avgTimeStr,
+			"Stats":      statsHtml,
+		})
 	})
 
 	r.GET("/health", func(c *gin.Context) {

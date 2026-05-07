@@ -1,0 +1,44 @@
+<!--
+ File: dashboard.html
+ Project: templates
+ Created: 2026-05-06
+ 
+ Last Modified: Wed May 06 2026
+ Modified By: Pedro Farias
+-->
+
+<html>
+    <head>
+        <title>Xiaomi Mimo Proxy (Go)</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 2rem; background: #f4f4f9; }
+            .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            h1 { color: #333; margin-top: 0; }
+            code { background: #eee; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.9em; }
+            .status { display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: #22c55e; margin-right: 8px; }
+            ul { padding-left: 1.2rem; }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1><span class="status"></span>Mimo AI Proxy (Go)</h1>
+            <p>Uptime: <strong>{{.Uptime}}s</strong></p>
+            <hr/>
+            <h3>Available Endpoints:</h3>
+            <ul>
+                <li><code>POST /v1/chat/completions</code> - OpenAI Compatible</li>
+                <li><code>GET /v1/models</code> - Dynamic Model List</li>
+                <li><code>GET /health</code> - System Health</li>
+            </ul>
+            <hr/>
+            <h3>Active Models:</h3>
+            <ul>{{.ModelList | safe}}</ul>
+            <hr/>
+            <h3>Performance:</h3>
+            <p>Avg Upstream Latency: <strong>{{.AvgLatency}}</strong></p>
+            <hr/>
+            <h3>Token Usage Stats:</h3>
+            <ul>{{.Stats | safe}}</ul>
+        </div>
+    </body>
+</html>

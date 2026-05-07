@@ -15,12 +15,12 @@ import (
 )
 
 func ExecutorDecide(state *AgentState, plan *PlanResponse, toolsRegistry *ToolRegistry) (*ExecutorDecision, error) {
-	stateBytes, _ := json.MarshalIndent(state, "", "  ")
+	stateBytes, _ := json.MarshalIndent(state.Compact(), "", "  ")
 	planBytes, _ := json.MarshalIndent(plan, "", "  ")
 	
 	systemPrompt := fmt.Sprintf(ExecutorSystemPrompt, toolsRegistry.GetToolDescriptions())
 	
-	userPrompt := fmt.Sprintf("Goal: %s\n\nCurrent State:\n%s\n\nCurrent Plan:\n%s\n\nDecide the next action to take.", state.Goal, string(stateBytes), string(planBytes))
+	userPrompt := fmt.Sprintf("Goal: %s\n\nCurrent State (Recent History):\n%s\n\nCurrent Plan:\n%s\n\nDecide the next action to take.", state.Goal, string(stateBytes), string(planBytes))
 	
 	response, err := CallLLM(systemPrompt, userPrompt, true)
 	if err != nil {

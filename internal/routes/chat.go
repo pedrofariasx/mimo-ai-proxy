@@ -495,24 +495,7 @@ func handleChatCompletions(c *gin.Context) {
 
 	// AUTOMATIC SESSION DETECTION: If User ID is empty, try to identify conversation by history hash
 	if convID == "" && len(input.Messages) > 0 {
-		// Find the first user message to create a fingerprint (skip system prompts)
-		var firstUserMsgIdx int = -1
-		for i, msg := range input.Messages {
-			if msg.Role == "user" {
-				firstUserMsgIdx = i
-				break
-			}
-		}
-		// Fallback: if no user message found, use the last message
-		if firstUserMsgIdx == -1 {
-			firstUserMsgIdx = len(input.Messages) - 1
-		}
-		// Create a fingerprint based on the user's text, not system prompts
-		firstMsg := "user:" + services.ExtractText(input.Messages[firstUserMsgIdx].Content, true)
-		if len(firstMsg) > 200 {
-			firstMsg = firstMsg[:200]
-		}
-		sessionKey = fmt.Sprintf("sess_%x", firstMsg)
+		sessionKey = services.GenerateFingerprint(input.Messages)
 		
 		// 1. Try Memory Cache
 		if cachedID, found := services.GlobalCache.Get(sessionKey); found {
@@ -527,6 +510,18 @@ func handleChatCompletions(c *gin.Context) {
 				fmt.Printf("Detected existing session via database fingerprint: %s\n", convID)
 			} else {
 				// 3. Try Deep Recovery (Messages table fallback)
+				// Find first user message again for deep recovery text
+				var firstUserMsgIdx int = -1
+				for i, msg := range input.Messages {
+					if msg.Role == "user" {
+						firstUserMsgIdx = i
+						break
+					}
+				}
+				if firstUserMsgIdx == -1 {
+					firstUserMsgIdx = len(input.Messages) - 1
+				}
+
 				firstMsgText := services.ExtractText(input.Messages[firstUserMsgIdx].Content, false)
 				deepID, err := services.FindSessionByMessage("user", firstMsgText)
 				if err == nil && deepID != "" {
@@ -836,33 +831,46 @@ func processStream(c *gin.Context, body io.Reader, completionID, model string, u
 	var usage models.Usage
 
 	var eventType string
-	var dataStr string
+	var dataBuffer strings.Builder
 
 	for {
 		line, err := reader.ReadString('\n')
-		if err != nil {
+		if err != nil && line == "" {
 			if err != io.EOF {
 				fmt.Printf("Reader error: %v\n", err)
 			}
 			break
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
+		
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" {
+			// Dispatch event
+			if dataBuffer.Len() > 0 {
+				processEvent(c, eventType, dataBuffer.String(), completionID, model, true, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
+				dataBuffer.Reset()
+				eventType = ""
+			}
+			if err != nil {
+				break
+			}
 			continue
 		}
 
-		if strings.HasPrefix(line, "event:") {
-			eventType = strings.TrimSpace(line[6:])
-			continue
+		if strings.HasPrefix(trimmedLine, "event:") {
+			eventType = strings.TrimSpace(trimmedLine[6:])
+		} else if strings.HasPrefix(trimmedLine, "data:") {
+			if dataBuffer.Len() > 0 {
+				dataBuffer.WriteString("\n")
+			}
+			dataBuffer.WriteString(strings.TrimSpace(trimmedLine[5:]))
 		}
-		if strings.HasPrefix(line, "data:") {
-			dataStr = strings.TrimSpace(line[5:])
-			
-			// Process event
-			processEvent(c, eventType, dataStr, completionID, model, true, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
-			
-			eventType = ""
-			dataStr = ""
+		
+		if err != nil {
+			// Last line without newline
+			if dataBuffer.Len() > 0 {
+				processEvent(c, eventType, dataBuffer.String(), completionID, model, true, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
+			}
+			break
 		}
 	}
 
@@ -915,16 +923,20 @@ func processNonStream(c *gin.Context, body io.Reader, completionID, model string
 		}
 		lines := strings.Split(event, "\n")
 		var eventType string
-		var dataStr string
+		var dataBuffer strings.Builder
 		for _, line := range lines {
-			if strings.HasPrefix(line, "event:") {
-				eventType = strings.TrimSpace(line[6:])
-			} else if strings.HasPrefix(line, "data:") {
-				dataStr = strings.TrimSpace(line[5:])
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "event:") {
+				eventType = strings.TrimSpace(trimmed[6:])
+			} else if strings.HasPrefix(trimmed, "data:") {
+				if dataBuffer.Len() > 0 {
+					dataBuffer.WriteString("\n")
+				}
+				dataBuffer.WriteString(strings.TrimSpace(trimmed[5:]))
 			}
 		}
-		if dataStr != "" {
-			processEvent(c, eventType, dataStr, completionID, model, false, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
+		if dataBuffer.Len() > 0 {
+			processEvent(c, eventType, dataBuffer.String(), completionID, model, false, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
 		}
 	}
 
@@ -1009,9 +1021,11 @@ func processNonStream(c *gin.Context, body io.Reader, completionID, model string
 }
 
 var (
-	reToolName      = regexp.MustCompile(`"name":\s*"([^"]+)"`)
-	reToolArgsStart = regexp.MustCompile(`[{\["tfn\d]`)
-	reTrailingBrace = regexp.MustCompile(`\s*}$`)
+	reToolName       = regexp.MustCompile(`"name":\s*"([^"]+)"`)
+	reToolNameAlt    = regexp.MustCompile(`<(\w+)>`)
+	reToolArgsStart  = regexp.MustCompile(`[{\["tfn\d]`)
+	reTrailingBrace  = regexp.MustCompile(`\s*}$`)
+	reAltTrailingTag = regexp.MustCompile(`\s*</\w+>$`)
 )
 
 func processEvent(c *gin.Context, eventType, dataStr, completionID, model string, isStreaming bool, inThinking, inToolCall, sentToolCallName *bool, currentToolID *string, toolCallIndex *int, toolCallBuffer, fullText, reasoningText *strings.Builder, usage *models.Usage) {
@@ -1092,14 +1106,34 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 					bufferStr := toolCallBuffer.String()
 					nameMatch := reToolName.FindStringSubmatch(bufferStr)
 					argsStartIdx := strings.Index(bufferStr, "\"arguments\":")
-
+					
+					// Try alternate format if JSON format not found
+					isAltFormat := false
+					name := ""
+					initialArgs := ""
+					
 					if len(nameMatch) > 1 && argsStartIdx != -1 {
-						name := nameMatch[1]
-						*currentToolID = "call_" + utils.GenerateID()
-						*sentToolCallName = true
-
+						name = nameMatch[1]
 						afterArgs := bufferStr[argsStartIdx+12:]
 						firstValIdx := reToolArgsStart.FindStringIndex(afterArgs)
+						if firstValIdx != nil {
+							initialArgs = strings.TrimSpace(afterArgs[firstValIdx[0]:])
+						}
+					} else {
+						nameMatchAlt := reToolNameAlt.FindStringSubmatch(bufferStr)
+						if len(nameMatchAlt) > 1 {
+							name = nameMatchAlt[1]
+							isAltFormat = true
+							tagEndIdx := strings.Index(bufferStr, ">")
+							if tagEndIdx != -1 {
+								initialArgs = strings.TrimSpace(bufferStr[tagEndIdx+1:])
+							}
+						}
+					}
+
+					if name != "" {
+						*currentToolID = "call_" + utils.GenerateID()
+						*sentToolCallName = true
 
 						initialToolCalls := []models.ToolCall{
 							{
@@ -1116,11 +1150,15 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 						b, _ := json.Marshal(chunk)
 						c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(b)))
 
-						if firstValIdx != nil {
-							initialArgs := strings.TrimSpace(afterArgs[firstValIdx[0]:])
+						if initialArgs != "" {
 							if endIdx != -1 {
-								initialArgs = reTrailingBrace.ReplaceAllString(initialArgs, "")
+								if isAltFormat {
+									initialArgs = reAltTrailingTag.ReplaceAllString(initialArgs, "")
+								} else {
+									initialArgs = reTrailingBrace.ReplaceAllString(initialArgs, "")
+								}
 							}
+							
 							if initialArgs != "" {
 								argChunk := []models.ToolCall{
 									{
@@ -1140,7 +1178,9 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 				} else {
 					delta := contentToProcess
 					if endIdx != -1 {
+						// Clean up trailing braces or tags
 						delta = reTrailingBrace.ReplaceAllString(strings.TrimSpace(delta), "")
+						delta = reAltTrailingTag.ReplaceAllString(delta, "")
 					}
 					if delta != "" {
 						argChunk := []models.ToolCall{

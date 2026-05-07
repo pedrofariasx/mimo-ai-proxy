@@ -71,7 +71,7 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 			Arguments interface{} `json:"arguments"`
 		}
 
-		if err := json.Unmarshal([]byte(jsonStr), &toolCallData); err == nil {
+		if err := json.Unmarshal([]byte(jsonStr), &toolCallData); err == nil && toolCallData.Name != "" {
 			var argsStr string
 			switch v := toolCallData.Arguments.(type) {
 			case string:
@@ -89,9 +89,29 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 					Arguments: argsStr,
 				},
 			})
-
-			// Remove the tool call from the clean text
 			cleanText = strings.Replace(cleanText, match[0], "", 1)
+		} else {
+			// Try alternate format: <tool_name>JSON_ARGS (closing tag optional)
+			altRegex := regexp.MustCompile(`(?s)<(\w+)>(.*)`)
+			altMatch := altRegex.FindStringSubmatch(jsonStr)
+			if len(altMatch) >= 3 {
+				toolName := altMatch[1]
+				argsStr := strings.TrimSpace(altMatch[2])
+				// Remove trailing tag if present (e.g. </read_file>)
+				closeTag := fmt.Sprintf("</%s>", toolName)
+				argsStr = strings.TrimSuffix(strings.TrimSpace(argsStr), closeTag)
+				argsStr = strings.TrimSpace(argsStr)
+				
+				toolCalls = append(toolCalls, models.ToolCall{
+					ID:   "call_" + GenerateID(),
+					Type: "function",
+					Function: models.ToolFunction{
+						Name:      toolName,
+						Arguments: argsStr,
+					},
+				})
+				cleanText = strings.Replace(cleanText, match[0], "", 1)
+			}
 		}
 	}
 
