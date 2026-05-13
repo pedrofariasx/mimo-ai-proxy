@@ -18,6 +18,7 @@ import (
 	"mimoproxy/internal/services"
 	"mimoproxy/internal/utils"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -132,7 +133,7 @@ func handleModels(c *gin.Context) {
 
 func handleDirectProxy(c *gin.Context) {
 	auth := services.GetSelectedAuth()
-	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
+	url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", url.QueryEscape(auth.Ph))
 
 	body, _ := io.ReadAll(c.Request.Body)
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
@@ -733,7 +734,7 @@ func handleChatCompletions(c *gin.Context) {
 
 	for i := 0; i < maxRetries; i++ {
 		auth = services.GetSelectedAuth()
-		url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
+		url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", url.QueryEscape(auth.Ph))
 		
 		payloadBytes, _ := json.Marshal(payload)
 		fmt.Printf("[%s] Chat Request: %d bytes | Model: %s | Media: %d\n", 
