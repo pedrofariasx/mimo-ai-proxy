@@ -14,6 +14,12 @@ import (
 	"strings"
 )
 
+type NormalizedMiMoOutput struct {
+	Content          string
+	ReasoningContent string
+	ToolCalls        []models.ToolCall
+}
+
 /**
  * Converts OpenAI tool definitions into textual instructions for the system prompt.
  */
@@ -76,14 +82,19 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 			switch v := toolCallData.Arguments.(type) {
 			case string:
 				argsStr = v
+				if !json.Valid([]byte(argsStr)) {
+					argsBytes, _ := json.Marshal(argsStr)
+					argsStr = string(argsBytes)
+				}
 			default:
 				b, _ := json.Marshal(v)
 				argsStr = string(b)
 			}
 
 			toolCalls = append(toolCalls, models.ToolCall{
-				ID:   "call_" + GenerateID(),
-				Type: "function",
+				Index: len(toolCalls),
+				ID:    "call_" + GenerateID(),
+				Type:  "function",
 				Function: models.ToolFunction{
 					Name:      toolCallData.Name,
 					Arguments: argsStr,
@@ -101,10 +112,16 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 				closeTag := fmt.Sprintf("</%s>", toolName)
 				argsStr = strings.TrimSuffix(strings.TrimSpace(argsStr), closeTag)
 				argsStr = strings.TrimSpace(argsStr)
-				
+
+				if !json.Valid([]byte(argsStr)) {
+					argsBytes, _ := json.Marshal(argsStr)
+					argsStr = string(argsBytes)
+				}
+
 				toolCalls = append(toolCalls, models.ToolCall{
-					ID:   "call_" + GenerateID(),
-					Type: "function",
+					Index: len(toolCalls),
+					ID:    "call_" + GenerateID(),
+					Type:  "function",
 					Function: models.ToolFunction{
 						Name:      toolName,
 						Arguments: argsStr,
@@ -118,14 +135,14 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 	// Robustness check for whole JSON or JSON in Markdown block
 	if len(toolCalls) == 0 {
 		trimmedText := strings.TrimSpace(text)
-		
+
 		// Extract json from markdown block if present
 		jsonBlockRegex := regexp.MustCompile(`(?s)\x60\x60\x60(?:json)?\s*({.*?})\s*\x60\x60\x60`)
 		jsonMatch := jsonBlockRegex.FindStringSubmatch(trimmedText)
 		if len(jsonMatch) >= 2 {
 			trimmedText = jsonMatch[1]
 		}
-		
+
 		if strings.HasPrefix(trimmedText, "{") && strings.HasSuffix(trimmedText, "}") {
 			var toolCallData struct {
 				Name      string      `json:"name"`
@@ -136,20 +153,25 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 				switch v := toolCallData.Arguments.(type) {
 				case string:
 					argsStr = v
+					if !json.Valid([]byte(argsStr)) {
+						argsBytes, _ := json.Marshal(argsStr)
+						argsStr = string(argsBytes)
+					}
 				default:
 					b, _ := json.Marshal(v)
 					argsStr = string(b)
 				}
 
 				toolCalls = append(toolCalls, models.ToolCall{
-					ID:   "call_" + GenerateID(),
-					Type: "function",
+					Index: len(toolCalls),
+					ID:    "call_" + GenerateID(),
+					Type:  "function",
 					Function: models.ToolFunction{
 						Name:      toolCallData.Name,
 						Arguments: argsStr,
 					},
 				})
-				
+
 				// If we successfully parsed a fallback tool call, we clear the text
 				// so the conversational text doesn't leak out as content.
 				cleanText = ""
@@ -158,6 +180,53 @@ func ParseToolCalls(text string) (string, []models.ToolCall) {
 	}
 
 	return strings.TrimSpace(cleanText), toolCalls
+}
+
+func NormalizeMiMoOutput(rawText, explicitReasoning string) NormalizedMiMoOutput {
+	text := strings.ReplaceAll(rawText, "\x00", "")
+	reasoning := strings.TrimSpace(strings.ReplaceAll(explicitReasoning, "\x00", ""))
+
+	reThink := regexp.MustCompile(`(?is)<think>(.*?)</think>`)
+	text = reThink.ReplaceAllStringFunc(text, func(match string) string {
+		parts := reThink.FindStringSubmatch(match)
+		if len(parts) > 1 {
+			if reasoning != "" {
+				reasoning += "\n"
+			}
+			reasoning += strings.TrimSpace(parts[1])
+		}
+		return ""
+	})
+
+	cleanText, toolCalls := ParseToolCalls(text)
+
+	if len(toolCalls) == 0 {
+		reAttemptResult := regexp.MustCompile(`(?is)<attempt_completion>\s*<result>(.*?)</result>\s*</attempt_completion>`)
+		if match := reAttemptResult.FindStringSubmatch(cleanText); len(match) > 1 {
+			cleanText = match[1]
+		}
+	}
+
+	cleanText = stripControlTags(cleanText)
+	if strings.TrimSpace(cleanText) == "" && len(toolCalls) == 0 && reasoning != "" {
+		cleanText = stripControlTags(reasoning)
+	}
+
+	return NormalizedMiMoOutput{
+		Content:          strings.TrimSpace(cleanText),
+		ReasoningContent: strings.TrimSpace(reasoning),
+		ToolCalls:        toolCalls,
+	}
+}
+
+func stripControlTags(text string) string {
+	for _, tag := range []string{"tool_call", "tool_use", "tool_result", "attempt_completion", "think"} {
+		reBlock := regexp.MustCompile(`(?is)<` + tag + `\b[^>]*>.*?</` + tag + `>`)
+		text = reBlock.ReplaceAllString(text, "")
+	}
+	reTags := regexp.MustCompile(`(?is)</?(result|call_id|tool_call|tool_use|tool_result|attempt_completion|think)\b[^>]*>`)
+	text = reTags.ReplaceAllString(text, "")
+	return strings.TrimSpace(strings.ReplaceAll(text, "\x00", ""))
 }
 
 /**

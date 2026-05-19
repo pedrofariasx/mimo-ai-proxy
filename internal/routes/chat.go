@@ -28,11 +28,34 @@ import (
 )
 
 var (
-	TokenStats       = make(map[string]int)
-	TokenUsageStats  = make(map[string]int)
-	ResponseTimes    = make([]int64, 0)
-	StatsMutex       sync.Mutex
+	TokenStats      = make(map[string]int)
+	TokenUsageStats = make(map[string]int)
+	ResponseTimes   = make([]int64, 0)
+	StatsMutex      sync.Mutex
 )
+
+func mimoDebugEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("MIMO_DEBUG")))
+	if v == "" {
+		v = strings.ToLower(strings.TrimSpace(os.Getenv("MIMO_PROXY_DEBUG")))
+	}
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
+func debugLogJSON(label string, value interface{}) {
+	if !mimoDebugEnabled() {
+		return
+	}
+	switch v := value.(type) {
+	case string:
+		fmt.Printf("[MIMO_DEBUG] %s: %s\n", label, v)
+	case []byte:
+		fmt.Printf("[MIMO_DEBUG] %s: %s\n", label, string(v))
+	default:
+		b, _ := json.MarshalIndent(value, "", "  ")
+		fmt.Printf("[MIMO_DEBUG] %s: %s\n", label, string(b))
+	}
+}
 
 func AddResponseTime(t int64) {
 	StatsMutex.Lock()
@@ -72,7 +95,7 @@ func RegisterChatRoutes(r *gin.Engine, authMiddleware gin.HandlerFunc) {
 	if authMiddleware != nil {
 		v1.Use(authMiddleware)
 	}
-	
+
 	{
 		v1.GET("/models", handleModels)
 		v1.POST("/chat/completions", handleChatCompletions)
@@ -112,10 +135,10 @@ func handleModels(c *gin.Context) {
 			modelsList := make([]map[string]interface{}, 0)
 			for _, m := range result.Data.ModelConfigList {
 				modelsList = append(modelsList, map[string]interface{}{
-					"id":       m.Model,
-					"object":   "model",
-					"created":  1700000000,
-					"owned_by": "xiaomi",
+					"id":          m.Model,
+					"object":      "model",
+					"created":     1700000000,
+					"owned_by":    "xiaomi",
 					"description": m.EnIntro,
 				})
 			}
@@ -136,7 +159,7 @@ func handleDirectProxy(c *gin.Context) {
 
 	body, _ := io.ReadAll(c.Request.Body)
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	
+
 	customHeaders := make(map[string]string)
 	for k, v := range c.Request.Header {
 		customHeaders[strings.ToLower(k)] = v[0]
@@ -234,7 +257,7 @@ func processAutoUploads(messages []models.Message, auth models.Auth) []models.Mu
 		return medias
 	}
 
-	// Only process the last message to avoid re-uploading and re-referencing 
+	// Only process the last message to avoid re-uploading and re-referencing
 	// attachments from previous turns in the history.
 	msg := messages[len(messages)-1]
 
@@ -272,7 +295,7 @@ func processAutoUploads(messages []models.Message, auth models.Auth) []models.Mu
 					continue
 				}
 				data = decoded
-				
+
 				// Guess extension from mime type
 				mime := strings.TrimPrefix(strings.Split(parts[0], ";")[0], "data:")
 				ext := "png"
@@ -361,7 +384,7 @@ func handleFileUpload(c *gin.Context) {
 
 func handleChatCompletions(c *gin.Context) {
 	completionID := utils.GenerateID()
-	
+
 	// Request caching/de-duplication
 	bodyCopy, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -372,7 +395,8 @@ func handleChatCompletions(c *gin.Context) {
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyCopy))
 	cacheKey := fmt.Sprintf("req_%x", bodyCopy)
 	fmt.Printf("Incoming request size: %d bytes\n", len(bodyCopy))
-	
+	debugLogJSON("openai_request_raw", bodyCopy)
+
 	if !strings.Contains(string(bodyCopy), "\"stream\":true") {
 		if cached, found := services.GlobalCache.Get(cacheKey); found {
 			c.JSON(http.StatusOK, cached)
@@ -381,12 +405,12 @@ func handleChatCompletions(c *gin.Context) {
 	}
 
 	var input struct {
-		Messages []models.Message   `json:"messages"`
-		Model    string             `json:"model"`
-		Stream   bool               `json:"stream"`
-		User     string             `json:"user"`
-		Tools    []models.Tool      `json:"tools"`
-		WebSearch bool              `json:"web_search"`
+		Messages    []models.Message    `json:"messages"`
+		Model       string              `json:"model"`
+		Stream      bool                `json:"stream"`
+		User        string              `json:"user"`
+		Tools       []models.Tool       `json:"tools"`
+		WebSearch   bool                `json:"web_search"`
 		MultiMedias []models.MultiMedia `json:"multi_medias"`
 	}
 
@@ -443,7 +467,7 @@ func handleChatCompletions(c *gin.Context) {
 						roleChunk.Choices[0].FinishReason = nil
 						b1, _ := json.Marshal(roleChunk)
 						c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(b1)))
-						
+
 						// Tool call
 						b2, _ := json.Marshal(response)
 						c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(b2)))
@@ -452,24 +476,37 @@ func handleChatCompletions(c *gin.Context) {
 						return
 					} else {
 						// Non-stream OpenAI format
+						type NonStreamMessage struct {
+							Role      string            `json:"role"`
+							Content   *string           `json:"content"`
+							ToolCalls []models.ToolCall `json:"tool_calls,omitempty"`
+						}
 						type NonStreamChoice struct {
-							Index        int            `json:"index"`
-							Message      models.Delta   `json:"message"`
-							FinishReason *string        `json:"finish_reason"`
+							Index        int              `json:"index"`
+							Message      NonStreamMessage `json:"message"`
+							FinishReason *string          `json:"finish_reason"`
 						}
 						type NonStreamResponse struct {
-							ID      string             `json:"id"`
-							Object  string             `json:"object"`
-							Created int64              `json:"created"`
-							Model   string             `json:"model"`
-							Choices []NonStreamChoice  `json:"choices"`
+							ID      string            `json:"id"`
+							Object  string            `json:"object"`
+							Created int64             `json:"created"`
+							Model   string            `json:"model"`
+							Choices []NonStreamChoice `json:"choices"`
 						}
 						ns := NonStreamResponse{
 							ID:      response.ID,
 							Object:  response.Object,
 							Created: response.Created,
 							Model:   response.Model,
-							Choices: []NonStreamChoice{{Index: 0, Message: response.Choices[0].Delta, FinishReason: response.Choices[0].FinishReason}},
+							Choices: []NonStreamChoice{{
+								Index: 0,
+								Message: NonStreamMessage{
+									Role:      "assistant",
+									Content:   nil,
+									ToolCalls: []models.ToolCall{nextTool},
+								},
+								FinishReason: response.Choices[0].FinishReason,
+							}},
 						}
 						c.JSON(http.StatusOK, ns)
 						return
@@ -485,7 +522,7 @@ func handleChatCompletions(c *gin.Context) {
 	var query string
 	convID := input.User
 	var sessionKey string
-	
+
 	// Automatic Media Upload
 	currentAuth := services.GetSelectedAuth()
 	autoMedias := processAutoUploads(input.Messages, currentAuth)
@@ -496,7 +533,7 @@ func handleChatCompletions(c *gin.Context) {
 	// AUTOMATIC SESSION DETECTION: If User ID is empty, try to identify conversation by history hash
 	if convID == "" && len(input.Messages) > 0 {
 		sessionKey = services.GenerateFingerprint(input.Messages)
-		
+
 		// 1. Try Memory Cache
 		if cachedID, found := services.GlobalCache.Get(sessionKey); found {
 			convID = cachedID.(string)
@@ -534,7 +571,7 @@ func handleChatCompletions(c *gin.Context) {
 					convID = utils.GenerateID()
 					services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
 					_ = services.SaveSession(sessionKey, convID)
-					
+
 					// Register the new conversation ID with Xiaomi
 					if err := services.CreateConversation(currentAuth, convID); err != nil {
 						fmt.Printf("Failed to register conversation with Xiaomi: %v\n", err)
@@ -552,22 +589,22 @@ func handleChatCompletions(c *gin.Context) {
 		if val, found := services.GlobalCache.Get(needsRebootKey); found && val.(bool) {
 			fmt.Printf("Rebooting session %s due to consecutive failures...\n", convID)
 			summaryContext = services.GenerateSummary(currentAuth, convID)
-			
+
 			// Generate new conversation ID
 			convID = utils.GenerateID()
-			
+
 			// Register new one
 			_ = services.CreateConversation(currentAuth, convID)
-			
+
 			// If we had a fingerprint, update it to point to the new convID
 			if sessionKey != "" {
 				services.GlobalCache.Set(sessionKey, convID, 24*time.Hour)
 				_ = services.SaveSession(sessionKey, convID)
 			}
-			
+
 			// Reset failure stats for the old and new (just in case) convIDs
 			services.GlobalCache.Delete(needsRebootKey)
-			services.GlobalCache.Delete("fail_count_" + convID) 
+			services.GlobalCache.Delete("fail_count_" + convID)
 		}
 	}
 
@@ -593,14 +630,14 @@ func handleChatCompletions(c *gin.Context) {
 
 		lastMessage := input.Messages[len(input.Messages)-1]
 		lastMessageText := utils.FormatMessageForMiMo(lastMessage)
-		
+
 		// Prepend summary if this is a rebooted session
 		if summaryContext != "" {
 			lastMessageText = summaryContext + lastMessageText
 		}
-		
+
 		services.SaveMessage(convID, "user_"+utils.GenerateID(), "user", lastMessageText)
-		
+
 		var systemContent string
 		for _, m := range input.Messages {
 			if m.Role == "system" {
@@ -616,7 +653,7 @@ func handleChatCompletions(c *gin.Context) {
 		} else {
 			query = lastMessageText
 		}
-		
+
 		// Add a final reminder at the very end of the user's message to ensure strict tool usage
 		if toolInstructions != "" && !strings.Contains(lastMessageText, "SYSTEM REMINDER") {
 			query += "\n\n[SYSTEM REMINDER: You must ONLY respond with a `<tool_call>` XML block if you need to take an action, or use `attempt_completion` if finished. Do NOT output conversational text.]"
@@ -631,7 +668,7 @@ func handleChatCompletions(c *gin.Context) {
 		// Do not limit history unless it exceeds 1M tokens (~4M characters)
 		var processedMessages []string
 		var systemPrompt string
-		
+
 		// Find system prompt first
 		for _, m := range input.Messages {
 			if m.Role == "system" {
@@ -657,7 +694,7 @@ func handleChatCompletions(c *gin.Context) {
 				query = strings.Join(processedMessages, "\n\n")
 			}
 		}
-		
+
 		if toolInstructions != "" {
 			query += "\n\n[SYSTEM REMINDER: You must ONLY respond with a `<tool_call>` XML block if you need to take an action, or use `attempt_completion` if finished. Do NOT output conversational text.]"
 		}
@@ -668,10 +705,10 @@ func handleChatCompletions(c *gin.Context) {
 		if len(query) > maxChars {
 			// Find a safe point to truncate (after the system prompt)
 			// to keep the most recent context.
-			
+
 			// Take the last portion of the query
 			truncated := query[len(query)-maxChars:]
-			
+
 			// Try to find the first newline to avoid starting in middle of a word
 			if idx := strings.Index(truncated, "\n"); idx != -1 {
 				truncated = truncated[idx+1:]
@@ -734,11 +771,12 @@ func handleChatCompletions(c *gin.Context) {
 	for i := 0; i < maxRetries; i++ {
 		auth = services.GetSelectedAuth()
 		url := fmt.Sprintf("https://aistudio.xiaomimimo.com/open-apis/bot/chat?xiaomichatbot_ph=%s", auth.Ph)
-		
+
 		payloadBytes, _ := json.Marshal(payload)
-		fmt.Printf("[%s] Chat Request: %d bytes | Model: %s | Media: %d\n", 
+		fmt.Printf("[%s] Chat Request: %d bytes | Model: %s | Media: %d\n",
 			completionID, len(payloadBytes), payload.ModelConfig.Model, len(payload.MultiMedias))
-		
+		debugLogJSON("mimo_request_payload", payload)
+
 		req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 		customHeaders := make(map[string]string)
 		for k, v := range c.Request.Header {
@@ -769,7 +807,7 @@ func handleChatCompletions(c *gin.Context) {
 			AddResponseTime(time.Since(startTime).Milliseconds())
 			break
 		}
-		
+
 		fmt.Printf("Error calling Xiaomi (retry %d): %v\n", i, err)
 		if i == maxRetries-1 {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to proxy request", "details": err.Error()})
@@ -819,7 +857,7 @@ func handleChatCompletions(c *gin.Context) {
 func processStream(c *gin.Context, body io.Reader, completionID, model string, userID string, query string) {
 	// Use a very large buffer for the reader to handle massive SSE events
 	reader := bufio.NewReaderSize(body, 16*1024*1024) // 16MB buffer
-	
+
 	var inThinking bool
 	var inToolCall bool
 	var sentToolCallName bool
@@ -832,6 +870,7 @@ func processStream(c *gin.Context, body io.Reader, completionID, model string, u
 
 	var eventType string
 	var dataBuffer strings.Builder
+	var rawStream strings.Builder
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -841,12 +880,13 @@ func processStream(c *gin.Context, body io.Reader, completionID, model string, u
 			}
 			break
 		}
-		
+		rawStream.WriteString(line)
+
 		trimmedLine := strings.TrimSpace(line)
 		if trimmedLine == "" {
 			// Dispatch event
 			if dataBuffer.Len() > 0 {
-				processEvent(c, eventType, dataBuffer.String(), completionID, model, true, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
+				processEvent(c, eventType, dataBuffer.String(), completionID, model, false, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
 				dataBuffer.Reset()
 				eventType = ""
 			}
@@ -864,21 +904,23 @@ func processStream(c *gin.Context, body io.Reader, completionID, model string, u
 			}
 			dataBuffer.WriteString(strings.TrimSpace(trimmedLine[5:]))
 		}
-		
+
 		if err != nil {
 			// Last line without newline
 			if dataBuffer.Len() > 0 {
-				processEvent(c, eventType, dataBuffer.String(), completionID, model, true, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
+				processEvent(c, eventType, dataBuffer.String(), completionID, model, false, &inThinking, &inToolCall, &sentToolCallName, &currentToolID, &toolCallIndex, &toolCallBuffer, &fullText, &reasoningText, &usage)
 			}
 			break
 		}
 	}
 
 	// End of stream
-	toolCallStr, toolCalls := utils.ParseToolCalls(fullText.String())
-	_ = toolCallStr
+	normalized := utils.NormalizeMiMoOutput(fullText.String(), reasoningText.String())
+	debugLogJSON("mimo_response_raw", rawStream.String())
+	debugLogJSON("openai_response_normalized", normalized)
+
 	finishReason := "stop"
-	if len(toolCalls) > 0 {
+	if len(normalized.ToolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
 
@@ -891,10 +933,33 @@ func processStream(c *gin.Context, body io.Reader, completionID, model string, u
 	IncrementTokenStat(os.Getenv("SERVICE_TOKEN"), usage.TotalTokens) // Use first token or specific one
 
 	// Save assistant message to local history
-	services.SaveMessage(userID, "asst_"+completionID, "assistant", fullText.String())
+	services.SaveMessage(userID, "asst_"+completionID, "assistant", normalized.Content)
 
 	// Update failure statistics
-	updateConversationFailStats(userID, fullText.String())
+	failStatText := normalized.Content
+	if failStatText == "" && len(normalized.ToolCalls) > 0 {
+		failStatText = "<tool_call>"
+	}
+	updateConversationFailStats(userID, failStatText)
+
+	if len(normalized.ToolCalls) > 0 {
+		for _, tc := range normalized.ToolCalls {
+			chunk := utils.CreateChatCompletionChunk(completionID, "", model, nil, "", nil, []models.ToolCall{tc})
+			chunkBytes, _ := json.Marshal(chunk)
+			c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(chunkBytes)))
+		}
+	} else {
+		if normalized.ReasoningContent != "" {
+			chunk := utils.CreateChatCompletionChunk(completionID, "", model, nil, normalized.ReasoningContent, nil, nil)
+			chunkBytes, _ := json.Marshal(chunk)
+			c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(chunkBytes)))
+		}
+		if normalized.Content != "" {
+			chunk := utils.CreateChatCompletionChunk(completionID, normalized.Content, model, nil, "", nil, nil)
+			chunkBytes, _ := json.Marshal(chunk)
+			c.Writer.WriteString(fmt.Sprintf("data: %s\n\n", string(chunkBytes)))
+		}
+	}
 
 	finalChunk := utils.CreateChatCompletionChunk(completionID, "", model, &finishReason, "", &usage, nil)
 	finalBytes, _ := json.Marshal(finalChunk)
@@ -940,14 +1005,16 @@ func processNonStream(c *gin.Context, body io.Reader, completionID, model string
 		}
 	}
 
-	cleanText, toolCalls := utils.ParseToolCalls(fullText.String())
-	
+	normalized := utils.NormalizeMiMoOutput(fullText.String(), reasoningText.String())
+	debugLogJSON("mimo_response_raw", string(respBody))
+	debugLogJSON("openai_response_normalized", normalized)
+
 	finishReason := "stop"
-	if len(toolCalls) > 0 {
+	if len(normalized.ToolCalls) > 0 {
 		finishReason = "tool_calls"
 		// If multi-tool and we have a user ID, store the rest in cache
-		if userID != "" && len(toolCalls) > 1 {
-			services.GlobalCache.Set("pending_tools_"+userID, toolCalls[1:], 10*time.Minute)
+		if userID != "" && len(normalized.ToolCalls) > 1 {
+			services.GlobalCache.Set("pending_tools_"+userID, normalized.ToolCalls[1:], 10*time.Minute)
 		}
 	}
 
@@ -959,19 +1026,45 @@ func processNonStream(c *gin.Context, body io.Reader, completionID, model string
 	}
 	IncrementTokenStat(os.Getenv("SERVICE_TOKEN"), usage.TotalTokens)
 
-	response := models.ChatCompletionChunk{
+	// Fix Choice for non-streaming: OpenAI uses 'message' instead of 'delta'
+	type NonStreamMessage struct {
+		Role             string            `json:"role"`
+		Content          *string           `json:"content"`
+		ReasoningContent string            `json:"reasoning_content,omitempty"`
+		ToolCalls        []models.ToolCall `json:"tool_calls,omitempty"`
+	}
+	type NonStreamChoice struct {
+		Index        int              `json:"index"`
+		Message      NonStreamMessage `json:"message"`
+		FinishReason *string          `json:"finish_reason"`
+	}
+	type NonStreamResponse struct {
+		ID      string            `json:"id"`
+		Object  string            `json:"object"`
+		Created int64             `json:"created"`
+		Model   string            `json:"model"`
+		Choices []NonStreamChoice `json:"choices"`
+		Usage   *models.Usage     `json:"usage"`
+	}
+
+	var contentPtr *string
+	if len(normalized.ToolCalls) == 0 {
+		contentPtr = &normalized.Content
+	}
+
+	nsResponse := NonStreamResponse{
 		ID:      "chatcmpl-" + completionID,
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   model,
-		Choices: []models.Choice{
+		Choices: []NonStreamChoice{
 			{
 				Index: 0,
-				Delta: models.Delta{
+				Message: NonStreamMessage{
 					Role:             "assistant",
-					Content:          cleanText,
-					ReasoningContent: strings.TrimSpace(reasoningText.String()),
-					ToolCalls:        toolCalls,
+					Content:          contentPtr,
+					ReasoningContent: normalized.ReasoningContent,
+					ToolCalls:        normalized.ToolCalls,
 				},
 				FinishReason: &finishReason,
 			},
@@ -979,41 +1072,15 @@ func processNonStream(c *gin.Context, body io.Reader, completionID, model string
 		Usage: &usage,
 	}
 
-	// Fix Choice for non-streaming: OpenAI uses 'message' instead of 'delta'
-	type NonStreamChoice struct {
-		Index        int            `json:"index"`
-		Message      models.Delta   `json:"message"`
-		FinishReason *string        `json:"finish_reason"`
-	}
-	type NonStreamResponse struct {
-		ID      string             `json:"id"`
-		Object  string             `json:"object"`
-		Created int64              `json:"created"`
-		Model   string             `json:"model"`
-		Choices []NonStreamChoice  `json:"choices"`
-		Usage   *models.Usage      `json:"usage"`
-	}
-
-	nsResponse := NonStreamResponse{
-		ID:      response.ID,
-		Object:  response.Object,
-		Created: response.Created,
-		Model:   response.Model,
-		Choices: []NonStreamChoice{
-			{
-				Index: 0,
-				Message: response.Choices[0].Delta,
-				FinishReason: response.Choices[0].FinishReason,
-			},
-		},
-		Usage: response.Usage,
-	}
-
 	// Save assistant message to local history
-	services.SaveMessage(userID, "asst_"+completionID, "assistant", fullText.String())
+	services.SaveMessage(userID, "asst_"+completionID, "assistant", normalized.Content)
 
 	// Update failure statistics
-	updateConversationFailStats(userID, fullText.String())
+	failStatText := normalized.Content
+	if failStatText == "" && len(normalized.ToolCalls) > 0 {
+		failStatText = "<tool_call>"
+	}
+	updateConversationFailStats(userID, failStatText)
 
 	// Cache successful non-streaming response
 	services.GlobalCache.Set(cacheKey, nsResponse, 5*time.Minute)
@@ -1059,13 +1126,25 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 	}
 
 	var d struct {
-		Content string `json:"content"`
+		Content          string `json:"content"`
+		ReasoningContent string `json:"reasoning_content"`
+		Thinking         string `json:"thinking"`
 	}
 	if err := json.Unmarshal([]byte(dataStr), &d); err != nil {
 		return
 	}
 
+	if d.ReasoningContent != "" {
+		reasoningText.WriteString(strings.ReplaceAll(d.ReasoningContent, "\x00", ""))
+	}
+	if d.Thinking != "" {
+		reasoningText.WriteString(strings.ReplaceAll(d.Thinking, "\x00", ""))
+	}
+
 	content := strings.ReplaceAll(d.Content, "\x00", "")
+	if content == "" {
+		return
+	}
 	remaining := content
 
 	for len(remaining) > 0 {
@@ -1106,12 +1185,12 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 					bufferStr := toolCallBuffer.String()
 					nameMatch := reToolName.FindStringSubmatch(bufferStr)
 					argsStartIdx := strings.Index(bufferStr, "\"arguments\":")
-					
+
 					// Try alternate format if JSON format not found
 					isAltFormat := false
 					name := ""
 					initialArgs := ""
-					
+
 					if len(nameMatch) > 1 && argsStartIdx != -1 {
 						name = nameMatch[1]
 						afterArgs := bufferStr[argsStartIdx+12:]
@@ -1158,7 +1237,7 @@ func processEvent(c *gin.Context, eventType, dataStr, completionID, model string
 									initialArgs = reTrailingBrace.ReplaceAllString(initialArgs, "")
 								}
 							}
-							
+
 							if initialArgs != "" {
 								argChunk := []models.ToolCall{
 									{
@@ -1256,10 +1335,10 @@ func updateConversationFailStats(userID string, fullText string) {
 	if userID == "" {
 		return
 	}
-	
+
 	failCountKey := "fail_count_" + userID
 	needsRebootKey := "needs_reboot_" + userID
-	
+
 	if len(strings.TrimSpace(fullText)) == 0 {
 		count := 0
 		if val, found := services.GlobalCache.Get(failCountKey); found {
@@ -1268,7 +1347,7 @@ func updateConversationFailStats(userID string, fullText string) {
 		count++
 		services.GlobalCache.Set(failCountKey, count, 24*time.Hour)
 		fmt.Printf("Consecutive empty responses for %s: %d\n", userID, count)
-		
+
 		if count >= 3 {
 			services.GlobalCache.Set(needsRebootKey, true, 24*time.Hour)
 			fmt.Printf("Session %s flagged for reboot due to 3+ failures\n", userID)
